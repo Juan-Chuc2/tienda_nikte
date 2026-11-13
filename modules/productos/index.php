@@ -1,0 +1,402 @@
+<?php
+require_once __DIR__ . '/../../includes/auth_check.php';
+require_once __DIR__ . '/../../config/database.php';
+require_once __DIR__ . '/../../includes/header.php';
+
+$productos = [];
+$error = '';
+$success = $_SESSION['producto_success'] ?? '';
+$productError = $_SESSION['producto_error'] ?? '';
+unset($_SESSION['producto_success'], $_SESSION['producto_error']);
+
+$busqueda = trim($_GET['q'] ?? '');
+$isAdmin = currentRole() === 'administradora';
+
+try {
+    $pdo = getPDO();
+
+    $sql = "SELECT
+            p.id_producto,
+            p.nombre,
+            p.presentacion,
+            p.descripcion,
+            p.uso_terapeutico,
+            p.precio_venta,
+            p.margen_ganancia,
+            p.stock_minimo,
+            p.requiere_receta,
+            p.activo,
+
+            COALESCE(SUM(
+                CASE
+                    WHEN l.fecha_vencimiento >= CURDATE() THEN l.cantidad_actual
+                    ELSE 0
+                END
+            ), 0) AS stock_actual,
+
+            (
+                SELECT l2.costo_unitario
+                FROM lote l2
+                WHERE l2.id_producto = p.id_producto
+                  AND l2.cantidad_actual > 0
+                  AND l2.fecha_vencimiento >= CURDATE()
+                ORDER BY l2.fecha_vencimiento ASC, l2.id_lote ASC
+                LIMIT 1
+            ) AS costo_referencia,
+
+            (
+                SELECT l2.codigo_lote
+                FROM lote l2
+                WHERE l2.id_producto = p.id_producto
+                  AND l2.cantidad_actual > 0
+                  AND l2.fecha_vencimiento >= CURDATE()
+                ORDER BY l2.fecha_vencimiento ASC, l2.id_lote ASC
+                LIMIT 1
+            ) AS lote_referencia
+
+        FROM producto p
+        LEFT JOIN lote l ON l.id_producto = p.id_producto";
+
+    $params = [];
+    $conditions = [];
+
+    if (!$isAdmin) {
+        $conditions[] = "p.activo = 1";
+    }
+
+    if ($busqueda !== '') {
+        $conditions[] = "(p.nombre LIKE :q OR p.presentacion LIKE :q OR p.descripcion LIKE :q OR p.uso_terapeutico LIKE :q)";
+        $params['q'] = '%' . $busqueda . '%';
+    }
+
+    if (!empty($conditions)) {
+        $sql .= " WHERE " . implode(' AND ', $conditions);
+    }
+
+    $sql .= " GROUP BY
+                p.id_producto,
+                p.nombre,
+                p.presentacion,
+                p.descripcion,
+                p.uso_terapeutico,
+                p.precio_venta,
+                p.margen_ganancia,
+                p.stock_minimo,
+                p.requiere_receta,
+                p.activo
+              ORDER BY p.nombre ASC";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $productos = $stmt->fetchAll();
+
+} catch (Throwable $e) {
+    $error = 'No se pudo cargar el inventario.';
+}
+?>
+
+<div class="container-fluid py-4">
+    <div class="row">
+        <?php require_once __DIR__ . '/../../includes/sidebar.php'; ?>
+
+        <div class="col-12 col-md-9 col-lg-10">
+            <div class="card shadow-sm">
+                <div class="card-body">
+
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h1 class="mb-0">Inventario</h1>
+
+                        <?php if ($isAdmin): ?>
+                            <a href="<?= BASE_URL; ?>/modules/productos/form.php" class="btn btn-success">
+                                Nuevo producto
+                            </a>
+                        <?php endif; ?>
+                    </div>
+
+                    <p class="text-muted">
+                        Consulta general del inventario de productos, existencias y alertas.
+                    </p>
+
+                    <div class="d-flex flex-wrap gap-2 mb-3">
+                        <a href="<?= BASE_URL; ?>/modules/productos/index.php" class="btn btn-outline-primary btn-sm">
+                            Ver inventario
+                        </a>
+
+                        <a href="<?= BASE_URL; ?>/modules/productos/stock_bajo.php" class="btn btn-outline-warning btn-sm">
+                            Stock bajo
+                        </a>
+
+                        <a href="<?= BASE_URL; ?>/modules/productos/por_vencer.php" class="btn btn-outline-danger btn-sm">
+                            Inventario por vencer
+                        </a>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-12 col-md-10">
+                            <input
+                                type="text"
+                                id="liveSearch"
+                                class="form-control"
+                                placeholder="Buscar por nombre, presentación, descripción o uso terapéutico">
+                        </div>
+
+                        <div class="col-12 col-md-2">
+                            <button type="button" id="clearSearch" class="btn btn-outline-secondary w-100">
+                                Limpiar
+                            </button>
+                        </div>
+                    </div>
+
+                    <?php if (!empty($success)): ?>
+                        <div class="alert alert-success">
+                            <?= htmlspecialchars($success); ?>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($productError)): ?>
+                        <div class="alert alert-danger">
+                            <?= htmlspecialchars($productError); ?>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if ($isAdmin): ?>
+                    <?php endif; ?>
+
+                    <?php if (!empty($error)): ?>
+                        <div class="alert alert-danger">
+                            <?= htmlspecialchars($error); ?>
+                        </div>
+                    <?php elseif (empty($productos)): ?>
+                        <div class="alert alert-warning">
+                            No se encontraron productos.
+                        </div>
+                    <?php else: ?>
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-hover align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Nombre</th>
+                                        <th>Presentación</th>
+                                        <th>Precio</th>
+
+                                        <?php if ($isAdmin): ?>
+                                            <th>Margen</th>
+                                            <th>Costo ref.</th>
+                                            <th>Ganancia est.</th>
+                                        <?php endif; ?>
+
+                                        <th>Stock mínimo</th>
+                                        <th>Stock actual</th>
+                                        <th>Estado stock</th>
+                                        <th>Registro</th>
+                                        <th>Receta</th>
+                                        <th width="280">Acciones</th>
+                                    </tr>
+                                </thead>
+
+                                <tbody>
+                                    <?php foreach ($productos as $producto): ?>
+                                        <?php
+                                        $stockActual = (int) $producto['stock_actual'];
+                                        $stockMinimo = (int) $producto['stock_minimo'];
+                                        $activo = (int) $producto['activo'] === 1;
+
+                                        $precioVenta = (float) ($producto['precio_venta'] ?? 0);
+
+                                        $costoReferencia = $producto['costo_referencia'] !== null
+                                            ? (float) $producto['costo_referencia']
+                                            : null;
+
+                                        $gananciaEstimada = $costoReferencia !== null
+                                            ? $precioVenta - $costoReferencia
+                                            : null;
+
+                                        if ($stockActual <= 0) {
+                                            $estadoStock = 'Agotado';
+                                            $claseStock = 'danger';
+                                        } elseif ($stockActual <= $stockMinimo) {
+                                            $estadoStock = 'Stock bajo';
+                                            $claseStock = 'warning';
+                                        } else {
+                                            $estadoStock = 'Disponible';
+                                            $claseStock = 'success';
+                                        }
+
+                                        $textoBusqueda = mb_strtolower(
+                                            ($producto['nombre'] ?? '') . ' ' .
+                                            ($producto['presentacion'] ?? '') . ' ' .
+                                            ($producto['descripcion'] ?? '') . ' ' .
+                                            ($producto['uso_terapeutico'] ?? '') . ' ' .
+                                            ($estadoStock ?? '')
+                                        );
+                                        ?>
+
+                                        <tr class="inventario-row <?= !$activo ? 'table-secondary' : ''; ?>"
+                                            data-search="<?= htmlspecialchars($textoBusqueda); ?>">
+                                            <td><?= (int) $producto['id_producto']; ?></td>
+
+                                            <td>
+                                                <?= htmlspecialchars($producto['nombre']); ?>
+
+                                                <?php if (!empty($producto['uso_terapeutico'])): ?>
+                                                    <br>
+                                                    <small class="text-muted">
+                                                        <?= htmlspecialchars($producto['uso_terapeutico']); ?>
+                                                    </small>
+                                                <?php endif; ?>
+                                            </td>
+
+                                            <td><?= htmlspecialchars($producto['presentacion'] ?? ''); ?></td>
+
+                                            <td>Q<?= number_format($precioVenta, 2); ?></td>
+
+                                            <?php if ($isAdmin): ?>
+                                                <td>
+                                                    <?= number_format((float) ($producto['margen_ganancia'] ?? 0), 2); ?>%
+                                                </td>
+
+                                                <td>
+                                                    <?php if ($costoReferencia !== null): ?>
+                                                        Q<?= number_format($costoReferencia, 2); ?>
+
+                                                        <?php if (!empty($producto['lote_referencia'])): ?>
+                                                            <br>
+                                                            <small class="text-muted">
+                                                                Lote: <?= htmlspecialchars($producto['lote_referencia']); ?>
+                                                            </small>
+                                                        <?php endif; ?>
+                                                    <?php else: ?>
+                                                        <span class="text-muted">Sin lote</span>
+                                                    <?php endif; ?>
+                                                </td>
+
+                                                <td>
+                                                    <?php if ($gananciaEstimada !== null): ?>
+                                                        <?php if ($gananciaEstimada < 0): ?>
+                                                            <span class="badge bg-danger">
+                                                                -Q<?= number_format(abs($gananciaEstimada), 2); ?>
+                                                            </span>
+                                                        <?php elseif ($gananciaEstimada == 0): ?>
+                                                            <span class="badge bg-warning text-dark">
+                                                                Q0.00
+                                                            </span>
+                                                        <?php else: ?>
+                                                            <span class="badge bg-success">
+                                                                Q<?= number_format($gananciaEstimada, 2); ?>
+                                                            </span>
+                                                        <?php endif; ?>
+                                                    <?php else: ?>
+                                                        <span class="text-muted">No aplica</span>
+                                                    <?php endif; ?>
+                                                </td>
+                                            <?php endif; ?>
+
+                                            <td><?= $stockMinimo; ?></td>
+
+                                            <td><?= $stockActual; ?></td>
+
+                                            <td>
+                                                <span class="badge text-bg-<?= $claseStock; ?>">
+                                                    <?= $estadoStock; ?>
+                                                </span>
+                                            </td>
+
+                                            <td>
+                                                <span class="badge text-bg-<?= $activo ? 'primary' : 'secondary'; ?>">
+                                                    <?= $activo ? 'Activo' : 'Inactivo'; ?>
+                                                </span>
+                                            </td>
+
+                                            <td><?= (int) $producto['requiere_receta'] === 1 ? 'Sí' : 'No'; ?></td>
+
+                                            <td>
+                                                <a href="<?= BASE_URL; ?>/modules/lotes/index.php?id_producto=<?= (int) $producto['id_producto']; ?>" class="btn btn-sm btn-outline-dark mb-1">
+                                                    Ver lotes
+                                                </a>
+
+                                                <?php if ($isAdmin): ?>
+                                                    <a href="<?= BASE_URL; ?>/modules/productos/form.php?id=<?= (int) $producto['id_producto']; ?>" class="btn btn-sm btn-primary mb-1">
+                                                        Editar
+                                                    </a>
+
+                                                    <?php if ($activo): ?>
+                                                        <a href="<?= BASE_URL; ?>/modules/productos/toggle_status.php?id=<?= (int) $producto['id_producto']; ?>&accion=desactivar"
+                                                           class="btn btn-sm btn-outline-warning">
+                                                            Desactivar
+                                                        </a>
+                                                    <?php else: ?>
+                                                        <a href="<?= BASE_URL; ?>/modules/productos/toggle_status.php?id=<?= (int) $producto['id_producto']; ?>&accion=activar"
+                                                           class="btn btn-sm btn-outline-success">
+                                                            Activar
+                                                        </a>
+                                                    <?php endif; ?>
+                                                <?php endif; ?>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div id="noResultsMessage" class="alert alert-warning mt-3 d-none">
+                            No se encontraron productos con esa búsqueda.
+                        </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const input = document.getElementById('liveSearch');
+    const clearBtn = document.getElementById('clearSearch');
+    const rows = document.querySelectorAll('.inventario-row');
+    const noResultsMessage = document.getElementById('noResultsMessage');
+
+    if (!input || !clearBtn || rows.length === 0 || !noResultsMessage) {
+        return;
+    }
+
+    function normalizeText(text) {
+        return text
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
+    }
+
+    function filterRows() {
+        const query = normalizeText(input.value.trim());
+        let visibleCount = 0;
+
+        rows.forEach(row => {
+            const searchText = normalizeText(row.dataset.search || '');
+
+            if (query === '' || searchText.includes(query)) {
+                row.style.display = '';
+                visibleCount++;
+            } else {
+                row.style.display = 'none';
+            }
+        });
+
+        if (visibleCount === 0) {
+            noResultsMessage.classList.remove('d-none');
+        } else {
+            noResultsMessage.classList.add('d-none');
+        }
+    }
+
+    input.addEventListener('input', filterRows);
+
+    clearBtn.addEventListener('click', function () {
+        input.value = '';
+        filterRows();
+        input.focus();
+    });
+});
+</script>
+
+<?php require_once __DIR__ . '/../../includes/footer.php'; ?>
