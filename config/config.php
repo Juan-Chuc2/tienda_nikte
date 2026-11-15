@@ -2,6 +2,6 @@
 date_default_timezone_set('America/Guatemala');
 
 define('APP_NAME', 'Farmacia Nikte');
-define('BASE_URL', 'http://localhost/nikte-farmacia');
+define('BASE_URL', 'http://localhost/nikte-personal');
 define('CLAVE_DESCUENTO', 'NIKTE2026');
 define('MAX_DESCUENTO_PORCENTAJE', 20);

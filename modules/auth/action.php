@@ -52,9 +52,10 @@ try {
     exit;
 
 } catch (Throwable $e) {
-    echo "<h2>Error detectado en el inicio de sesión</h2>";
-    echo "<pre>";
-    echo htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8');
-    echo "</pre>";
+    error_log('Error de autenticación: ' . $e->getMessage());
+
+    $_SESSION['error'] = 'Error al iniciar sesión: ' . $e->getMessage();
+
+    header('Location: ' . BASE_URL . '/modules/auth/login.php');
     exit;
 }
